@@ -16,7 +16,7 @@ function relay(type, data) {
       console.error('[LARP] relay error:', type, e.message);
     });
   } catch(e) {
-    console.error('[LARP] relay exception:', type, e.message);
+    console.error('[LARP] relay exfception:', type, e.message);
   }
 }
 
