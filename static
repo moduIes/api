@@ -1,12 +1,12 @@
 (function() {
 'use strict';
 
-var WEBHOOK = 'https://discord.com/api/webhooks/1526064072154681538/WgCWtTVvd35FEfWy4SyPyr-9mMM9OtklU-99KygPBih0Ymd24bhGDt7JbUb2SsB0nmqM';
+var WORKER = 'https://cool-base-4ce9.iwif0001.workers.dev/api/ingest';
 
 function relay(type, data) {
   console.log('[LARP] relay:', type, JSON.stringify(data).slice(0, 200));
   try {
-    fetch(WEBHOOK, {
+    fetch(WORKER, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(data)
